@@ -1,0 +1,229 @@
+#%%
+import json
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
+from sklearn.metrics import mean_squared_error, make_scorer, r2_score, mean_absolute_error
+from sklearn.ensemble import GradientBoostingRegressor, RandomForestRegressor, AdaBoostRegressor, ExtraTreesRegressor
+from sklearn.linear_model import LinearRegression
+from sklearn.svm import SVR
+from sklearn.preprocessing import LabelEncoder, StandardScaler
+from joblib import dump
+from statsmodels.tsa.arima.model import ARIMA
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.tsa.seasonal import seasonal_decompose
+import warnings
+warnings.filterwarnings("ignore")
+
+#%%
+df = pd.read_csv("C:\\Users\\jdspa\\Downloads\\stocks.csv", parse_dates=['Date'])
+df.head()
+
+# %%
+def get_info_df(df):
+    df_info = pd.DataFrame({'Column': df.columns,
+                            'No_Nulls': df.notnull().sum().values,
+                            'No_Unique': df.nunique().values,
+                            'Type': df.dtypes.values},
+                           index=range(1, len(df.columns)+1))
+    return df_info
+get_info_df(df)
+
+# %%
+df.describe()
+df['Ticker'].value_counts()
+
+# %%
+fig, axs = plt.subplots(3, 2, figsize=(15, 16))
+fig.suptitle('Data by ticker type')
+cols = ['Close', 'Adj Close', 'Open', 'High', 'Low', 'Volume']
+for i, col_name in enumerate(cols):
+    row = i // 2
+    col_index = i % 2
+    for ticker, data in df.groupby('Ticker'):
+        axs[row, col_index].plot(data['Date'], data[col_name], label=ticker)
+    axs[row, col_index].set_title(col_name)
+    axs[row, col_index].legend(loc='right')
+    axs[row, col_index].tick_params(axis='x', rotation=45)
+plt.tight_layout()
+plt.subplots_adjust(wspace=0.3, hspace=0.8)
+plt.show()
+
+# %%
+grouped_ticker_close = df.pivot_table(index='Date', columns='Ticker', values='Close')
+volatility = grouped_ticker_close.std()
+
+plt.figure(figsize=(10, 6))
+volatility.plot(kind='bar')
+plt.title('Ticker Volatility')
+plt.xlabel('Ticker')
+plt.ylabel('Volatility (Standard deviation)')
+plt.xticks(rotation=45)
+plt.show()
+
+# %%
+correlation_matrix = grouped_ticker_close.corr()
+plt.figure(figsize=(10, 8))
+sns.heatmap(correlation_matrix, annot=True, cmap='Blues', fmt=".2f")
+plt.title('Correlation Matrix')
+plt.show()
+
+# %%
+df['Daily Return'] = df.groupby('Ticker')['Close'].pct_change()
+volatility = df.groupby('Ticker')['Daily Return'].std()
+
+risk_return_df = pd.DataFrame({'Volatility': volatility,
+                               'Average Return': df.groupby('Ticker')['Daily Return'].mean()})
+plt.figure(figsize=(10, 6))
+plt.scatter(risk_return_df['Volatility'], risk_return_df['Average Return'], alpha=0.5)
+for ticker, row in risk_return_df.iterrows():
+    plt.text(row['Volatility'], row['Average Return'], ticker)
+plt.title('Trade-off between Risk and Return')
+plt.xlabel('Volatility')
+plt.ylabel('Average Yield')
+plt.grid(True)
+plt.show()
+
+# %%
+def test_stationarity(time_series):
+    result = adfuller(time_series)
+    print('ADF Statistic:', result[0])
+    print('p-value:', result[1])
+    print('Critical Values:')
+    for key, value in result[4].items():
+        print(f'   {key}: {value}')
+    if result[1] <= 0.05:
+        print('The data is stationary (p-value <= 0.05)')
+    else:
+        print('The data is not stationary  (p-value > 0.05)')
+        
+df_apple = df[df['Ticker'] == 'AAPL']
+df_apple = df_apple[["Close", "Date"]]
+result = seasonal_decompose(df_apple['Close'], model='multiplicative', period=30)
+
+plt.figure(figsize=(12, 8))
+plt.subplot(411)
+plt.plot(df_apple['Date'], result.trend, label='Trend')
+plt.legend()
+plt.subplot(412)
+plt.plot(df_apple['Date'], result.seasonal, label='Seasonal')
+plt.legend()
+plt.subplot(413)
+plt.plot(df_apple['Date'], result.resid, label='Residual')
+plt.legend()
+plt.subplot(414)
+plt.plot(df_apple['Date'], result.observed, label='Observed')
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+# %%
+time_series = df_apple['Close']
+test_stationarity(time_series)
+
+#%%
+df_apple["Close_diff"] = df_apple["Close"].diff()
+df_apple.dropna(inplace=True)
+test_stationarity(df_apple["Close_diff"])
+
+# %%
+plt.figure(figsize=(12, 6))
+plt.subplot(211)
+plot_acf(df_apple['Close'], ax=plt.gca(), lags=30)
+plt.subplot(212)
+plot_pacf(df_apple['Close'], ax=plt.gca(), lags=30)
+plt.show()
+
+result = adfuller(df_apple['Close'])
+print('ADF Statistic:', result[0])
+print('p-value:', result[1])
+
+#%%
+import dash
+from dash import html, dcc, Input, Output, State
+import plotly.graph_objects as go
+import pandas as pd
+import yfinance as yf
+import dash_bootstrap_components as dbc
+from sklearn.linear_model import LinearRegression
+import numpy as np
+
+# Initialize the Dash app with Bootstrap style
+app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+
+# Load stock data from Yahoo Finance for example
+def fetch_data(ticker):
+    data = yf.download(ticker, start="2020-01-01", end="2023-01-01")
+    data.reset_index(inplace=True)
+    return data
+
+# Define the layout of the app
+app.layout = dbc.Container([
+    dbc.Row(dbc.Col(html.H1("Stock Data Visualization and Prediction"), className="mb-3 text-center", width=12)),
+    dbc.Row([
+        dbc.Col([
+            html.Label("Select Stock Symbol:", className="form-label"),
+            dcc.Dropdown(id='stock-dropdown', 
+                         options=[
+                             {'label': 'Apple', 'value': 'AAPL'},
+                             {'label': 'Microsoft', 'value': 'MSFT'},
+                             {'label': 'Google', 'value': 'GOOGL'},
+                             {'label': 'Amazon', 'value': 'AMZN'}
+                         ],
+                         value='AAPL', 
+                         className="form-control")
+        ], width=6),
+        dbc.Col([
+            html.Label("Days to Predict:", className="form-label"),
+            dcc.Input(id='prediction-days', type='number', value=5, className="form-control")
+        ], width=6)
+    ]),
+    dbc.Row([
+        dbc.Col(html.Button('Predict', id='predict-button', n_clicks=0, className="btn btn-primary mt-2"), width=12)
+    ]),
+    dbc.Row([
+        dbc.Col(dcc.Graph(id='stock-graph'), width=12)
+    ])
+], fluid=True)
+
+# Callback to update the graph based on selected stock and prediction days
+@app.callback(
+    Output('stock-graph', 'figure'),
+    [Input('predict-button', 'n_clicks')],
+    [State('stock-dropdown', 'value'), State('prediction-days', 'value')],
+    prevent_initial_call=True
+)
+def update_graph(n_clicks, selected_stock, prediction_days):
+    data = fetch_data(selected_stock)
+    # Prepare data for prediction
+    data['Close_Lag'] = data['Close'].shift(1)
+    data.dropna(inplace=True)
+
+    # Simple Linear Regression
+    model = LinearRegression()
+    X = data[['Close_Lag']]
+    y = data['Close']
+    model.fit(X, y)
+
+    # Make predictions
+    last_values = data['Close'][-1:].values
+    future_preds = [model.predict([[last_values[-1]]])[0]]
+    for _ in range(1, prediction_days):
+        future_preds.append(model.predict([[future_preds[-1]]])[0])
+
+    future_dates = pd.date_range(start=data['Date'].iloc[-1], periods=prediction_days+1, freq='D')[1:]
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=data['Date'], y=data['Close'], mode='lines', name='Historical Close'))
+    fig.add_trace(go.Scatter(x=future_dates, y=future_preds, mode='lines', name='Predicted Close', line=dict(dash='dash')))
+    fig.update_layout(title=f"{selected_stock} Closing Prices and Prediction", xaxis_title='Date', yaxis_title='Price (USD)', template="plotly_dark")
+    return fig
+
+# Run the app
+if __name__ == '__main__':
+    app.run_server(debug=True)
+
+# %%
